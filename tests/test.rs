@@ -1,11 +1,16 @@
 use std::io;
 use std::io::Cursor;
+use std::io::Read;
+use std::io::Write;
 
 use bytesize::ByteSize;
 use rand::{thread_rng, RngCore};
 use regex::Regex;
 
 use bzip3::{read, write};
+
+// 70kb instead of 65kb?
+const CHAIN_BLOCK_SIZE: usize = 1024 * 70;
 
 #[test]
 fn test() {
@@ -56,6 +61,43 @@ fn version() {
         .is_match(version));
 }
 
+#[test]
+fn test_chained_encoders_and_decoders() {
+    let input = generate_random_data(1024 * 200);
+    let mut reader = create_encoder_chain(10, input.as_slice());
+
+    let mut output = vec![];
+    let mut writer = create_decoder_chain(10, &mut output);
+
+    io::copy(&mut reader, &mut writer).unwrap();
+
+    drop(writer);
+    assert_eq!(input, output);
+}
+
+fn create_encoder_chain<'a>(count: usize, reader: impl Read + 'a) -> Box<dyn Read + 'a> {
+    assert!(count >= 1);
+    let mut encoder: Box<dyn Read> =
+        Box::new(read::Bz3Encoder::new(reader, CHAIN_BLOCK_SIZE).unwrap());
+
+    for _ in 1..count {
+        encoder = Box::new(read::Bz3Encoder::new(encoder, CHAIN_BLOCK_SIZE).unwrap());
+    }
+
+    encoder
+}
+
+fn create_decoder_chain<'a>(count: usize, reader: impl Write + 'a) -> Box<dyn Write + 'a> {
+    assert!(count >= 1);
+    let mut decoder: Box<dyn Write> = Box::new(write::Bz3Decoder::new(reader));
+
+    for _ in 1..count {
+        decoder = Box::new(write::Bz3Decoder::new(decoder));
+    }
+
+    decoder
+}
+
 fn test_write_based(data_size: usize, block_size: usize) {
     let data = generate_random_data(data_size);
     let mut reader = Cursor::new(&data);
@@ -92,7 +134,7 @@ fn test_read_based(data_size: usize, block_size: usize) {
     {
         let mut reader = Cursor::new(compressed);
         let mut decoder = read::Bz3Decoder::new(&mut reader).unwrap();
-        assert_eq!({ decoder.block_size() }, block_size);
+        assert_eq!(decoder.block_size(), block_size);
         io::copy(&mut decoder, &mut uncompressed).unwrap();
     }
 
